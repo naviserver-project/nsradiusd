@@ -361,6 +361,12 @@ proc radius::dictinit {} {
     ns_radius dictadd LE-Terminate-Detail 2 307 string
     ns_radius dictadd LE-Advice-of-Charge 3 307 string
 
+    # RiverStone attributes
+    ns_radius dictadd Riverstone-Command 1 5567 string
+    ns_radius dictadd Riverstone-System-Event 2 5567 string
+    ns_radius dictadd Riverstone-SNMP-Config-Change 3 5567 string
+    ns_radius dictadd Riverstone-User-Level 4 5567 integer
+
     # Shiva attributes
     ns_radius dictadd Shiva-User-Attributes 51 166 string
     ns_radius dictadd Shiva-User-Attributes 1 166 string

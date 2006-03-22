@@ -1,0 +1,34 @@
+RADIUS server for NaviServer 4.x
+Release 1.0
+vlad@crystalballinc.com
+
+This is NaviServer module that implements RADIUS server
+
+/*--------------------------------------------------------------------*/
+
+
+ Configuration
+ 
+   nsd.tcl
+ 
+   ns_section    ns/servers/server/modules
+   ns_param      nsradiusd        nsradiusd.so
+ 
+   ns_section    ns/servers/server/module/nradiusd
+   ns_param      address    	0.0.0.0
+   ns_param      auth_port      1645
+   ns_param      acct_port      1646
+   ns_param	 proc		radius::server
+
+ Usage
+
+    ns_radius send host port secret ?Code code? ?Retries retries? ?Timeout timeout? ?attr value? ...
+      performs RADIUS requests
+  
+      Example:
+        ns_radius send localhost 1645 secret User-Name test User-Password test2
+ 
+ Authors
+ 
+     Vlad Seryakov vlad@crystalballinc.com
+

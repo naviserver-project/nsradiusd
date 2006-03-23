@@ -16,6 +16,7 @@ proc radius::init {} {
     # Load users file
     set config [file dirname [ns_info config]]/radius.tcl
     if { [file exists $config] } { source $config }
+    ns_log Notice radius::init: loaded
 }
 
 # RADIUS server handler

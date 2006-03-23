@@ -729,10 +729,10 @@ static RadiusAttr *RadiusAttrCreate(Server *server, char *name, int attr, int ve
         return 0;
     }
     vp = (RadiusAttr*)ns_calloc(1, sizeof(RadiusAttr));
-    vp->vendor = vendor;
     vp->attribute = attr;
     if (dict) {
         vp->type = dict->type;
+        vp->vendor = dict->vendor;
         vp->attribute = dict->attribute;
         strcpy(vp->name, dict->name);
     } else {
@@ -883,12 +883,13 @@ static RadiusAttr *RadiusAttrParse(Server *server, RadiusHeader *auth, int len, 
             if (((ptr - p0)) + attrlen + 6 >= RADIUS_BUFFER_LEN) {
                 break;
             }
-            memcpy(&vendor, ptr, sizeof(unsigned int));
+            memcpy(&vendor, ptr, 4);
             vendor = ntohl(vendor);
             ptr += 4;
             attr = *ptr++;
             ptr++;
             attrlen -= 6;
+            length -= 6;
         }
         if ((vp = RadiusAttrCreate(server, 0, attr, vendor, (char*)ptr, attrlen))) {
             RadiusAttrLink(&head, vp);
@@ -907,55 +908,57 @@ static RadiusAttr *RadiusAttrParse(Server *server, RadiusHeader *auth, int len, 
 
 static unsigned char *RadiusAttrPack(RadiusAttr *vp, unsigned char *ptr, short *length)
 {
-    unsigned char *p0 = ptr;
+    unsigned char *p0, *vptr;
     unsigned int lvalue, len, vlen = 0;
 
     if (!ptr || !vp) {
         return ptr;
     }
-    if (vp->vendor> 0) {
+    if (vp->vendor > 0) {
         vlen = 6;
         if (*length + vlen >= RADIUS_BUFFER_LEN) {
             return p0;
         }
         *ptr++ = RADIUS_VENDOR_SPECIFIC;
-        *ptr++ = 6; /* Length of VS header (len/opt/oid) */
+        /* Remember length position */
+        p0 = ptr;
+        /* Length of VS header (len/opt/oid) */
+        *ptr++ = 6;
         lvalue = htonl(vp->vendor);
-        memcpy(ptr,  &lvalue,  sizeof(unsigned int));
+        memcpy(ptr,  &lvalue,  4);
         ptr += 4;
+        *length += 6;
     }
     switch (vp->type) {
      case RADIUS_TYPE_STRING:
-     case RADIUS_TYPE_FILTER_BINARY:
          len = strlen((char*)vp->sval);
-         if (*length + vlen+len+2 >= RADIUS_BUFFER_LEN) {
-             return p0;
-         }
-         *ptr++ = vp->attribute;
-         *ptr++ = len + 2;
-         memcpy(ptr, vp->sval, len);
-         ptr += len;
-         *length += vlen + len + 2;
+         vptr = vp->sval;
+         break;
+     case RADIUS_TYPE_FILTER_BINARY:
+         len = vp->lval;
+         vptr = vp->sval;
          break;
      case RADIUS_TYPE_DATE:
      case RADIUS_TYPE_IPADDR:
      case RADIUS_TYPE_INTEGER:
          len = sizeof(lvalue);
-         if (*length + vlen+len+2 >= RADIUS_BUFFER_LEN) {
-             return p0;
-         }
-         *ptr++ = vp->attribute;
-         *ptr++ = sizeof(lvalue) + 2;
          lvalue = htonl(vp->lval);
-         memcpy(ptr, (char *)&lvalue, sizeof(lvalue));
-         ptr += len;
-         *length += vlen + len + 2;
+         vptr = (unsigned char*)&lvalue;
          break;
      default:
          return p0;
     }
+    if (*length + len + 2 >= RADIUS_BUFFER_LEN) {
+        return p0;
+    }
+    /* Store the attribute and value */
+    *ptr++ = vp->attribute;
+    *ptr++ = len + 2;
+    memcpy(ptr, vptr, len);
+    ptr += len;
+    *length += len + 2;
     if (vp->vendor > 0) {
-        *p0 += len+2;
+        *p0 += len + 2;
     }
     return ptr;
 }
@@ -1582,6 +1585,7 @@ again:
             } else
             if ((attr = RadiusAttrCreate(server, Tcl_GetString(objv[i]), -1, -1, Tcl_GetString(objv[i+1]), -1))) {
                 RadiusAttrLink(&req->reply, attr);
+                Ns_Log(Error, "AttrSet: %s %d %d", attr->name, attr->attribute, attr->vendor);
             }
         }
         break;

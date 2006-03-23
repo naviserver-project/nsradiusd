@@ -17,9 +17,7 @@ This is NaviServer module that implements RADIUS server
    ns_section    ns/servers/server/module/nradiusd
    ns_param      address    	0.0.0.0
    ns_param      port           1645
-   ns_param      acct_port      1646
-   ns_param	 auth_proc	radius::server
-   ns_param	 acct_proc	radius::server
+   ns_param	 proc		radius::server
    ns_param	 drivermode     false
 
    If drivemode is true, tftp server will use connection threads and will

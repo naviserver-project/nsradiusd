@@ -222,12 +222,9 @@ typedef struct _radiusUser {
 typedef struct _server {
    char *name;
    char *address;
-   char *auth_proc;
-   char *acct_proc;
-   int auth_port;
-   int acct_port;
-   int auth_sock;
-   int acct_sock;
+   char *proc;
+   int port;
+   int sock;
    short errors;
    int drivermode;
    Ns_Mutex userMutex;
@@ -314,12 +311,10 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
 
     Ns_ConfigGetBool(path, "drivermode", &srvPtr->drivermode);
     srvPtr->address = Ns_ConfigGetValue(path, "address");
-    srvPtr->auth_proc = Ns_ConfigGetValue(path, "auth_proc");
-    srvPtr->acct_proc = Ns_ConfigGetValue(path, "acct_proc");
-    srvPtr->auth_port = Ns_ConfigIntRange(path, "port", RADIUS_AUTH_PORT, 1, 99999);
-    srvPtr->acct_port = Ns_ConfigIntRange(path, "acct_port", RADIUS_ACCT_PORT, 1, 99999);
+    srvPtr->proc = Ns_ConfigGetValue(path, "proc");
+    srvPtr->port = Ns_ConfigIntRange(path, "port", RADIUS_AUTH_PORT, 1, 99999);
     /* Auth requests can be handled by callback or driver mode */
-    if (srvPtr->auth_proc != NULL && srvPtr->auth_port > 0) {
+    if (srvPtr->proc != NULL && srvPtr->port > 0) {
         if (srvPtr->drivermode) {
             init.version = NS_DRIVER_VERSION_1;
             init.name = "nsradius";
@@ -334,26 +329,15 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
             }
             Ns_RegisterRequest(server, "RADIUS",  "/", RadiusRequestProc, NULL, srvPtr, 0);
         } else {
-            if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->auth_port)) == -1) {
-                Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->auth_port, strerror(errno));
+            if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port)) == -1) {
+                Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
             } else {
-                srvPtr->auth_sock = sock;
+                srvPtr->sock = sock;
                 Ns_SockCallback(sock, RadiusCallback, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
-                Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->auth_port, srvPtr->auth_proc);
+                Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->port, srvPtr->proc);
             }
         }
     }
-    /* Accounting port is always callback */
-    if (srvPtr->acct_proc != NULL && srvPtr->acct_port > 0) {
-        if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->acct_port)) == -1) {
-            Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->acct_port, strerror(errno));
-        } else {
-            srvPtr->acct_sock = sock;
-            Ns_SockCallback(sock, RadiusCallback, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
-            Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->acct_port, srvPtr->acct_proc);
-        }
-    }
-    
     RadiusInit(srvPtr);
     Ns_MutexSetName2(&srvPtr->dictMutex, "nsradiusd", "radiusDict");
     Ns_MutexSetName2(&srvPtr->userMutex, "nsradiusd", "radiusUser");
@@ -1756,18 +1740,8 @@ static void RadiusRequestProcess(RadiusRequest *req)
 
     Ns_TlsSet(&radiusTls, req);
 
-    switch (req->req_code) {
-     case RADIUS_ACCOUNTING_REQUEST:
-     case RADIUS_ACCOUNTING_STATUS:
-        if (req->server->acct_proc != NULL && Tcl_Eval(interp, req->server->acct_proc) != TCL_OK) {
-            Ns_TclLogError(interp);
-        }
-        break;
-
-     default:
-        if (req->server->auth_proc != NULL && Tcl_Eval(interp, req->server->auth_proc) != TCL_OK) {
-            Ns_TclLogError(interp);
-        }
+    if (Tcl_Eval(interp, req->server->proc) != TCL_OK) {
+        Ns_TclLogError(interp);
     }
     Ns_TclDeAllocateInterp(interp);
     Ns_TlsSet(&radiusTls, 0);

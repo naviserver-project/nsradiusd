@@ -429,6 +429,7 @@ static int RadiusRequestProc(void *arg, Ns_Conn *conn)
     RadiusRequest *req = (RadiusRequest*)sock->arg;
 
     if (req != NULL) {
+        Ns_ConnSetPeer(conn, &req->sa);
         RadiusRequestProcess(req);
         /* For access log file */
         attr = RadiusAttrFind(req->req, NULL, RADIUS_USER_NAME, 0);

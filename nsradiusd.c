@@ -401,7 +401,6 @@ static int RadiusProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int n
              ds = Ns_DriverSockContent(sock);
              Tcl_DStringSetLength(ds, sock->driver->bufsize);
              req = RadiusRequestCreate(server, sock->sock, ds->string, ds->length);
-             Ns_Log(Error, "Req created %d", req->req_length);
              if (req != NULL) {
                  /* Adjust buffer to actual read size */
                  ds->length = req->req_length;
@@ -1713,7 +1712,6 @@ again:
             } else
             if ((attr = RadiusAttrCreate(server, Tcl_GetString(objv[i]), -1, -1, Tcl_GetString(objv[i+1]), -1))) {
                 RadiusAttrLink(&req->reply, attr);
-                Ns_Log(Error, "AttrSet: %s %d %d", attr->name, attr->attribute, attr->vendor);
             }
         }
         break;

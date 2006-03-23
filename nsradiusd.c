@@ -221,14 +221,15 @@ typedef struct _radiusUser {
 
 typedef struct _server {
    char *name;
-   char *proc;
    char *address;
+   char *auth_proc;
+   char *acct_proc;
    int auth_port;
    int acct_port;
-   int enabled;
    int auth_sock;
    int acct_sock;
    short errors;
+   int drivermode;
    Ns_Mutex userMutex;
    Ns_Mutex clientMutex;
    Ns_Mutex requestMutex;
@@ -243,21 +244,32 @@ typedef struct _radiusRequest {
    int sock;
    int req_id;
    int req_code;
+   short req_length;
+   short reply_length;
    int reply_code;
+   char *buffer;
+   int buffer_length;
    Server *server;
    RadiusAttr *req;
    RadiusAttr *reply;
    RadiusVector vector;
    RadiusClient *client;
-   struct sockaddr_in addr;
+   struct sockaddr_in sa;
 } RadiusRequest;
 
-static Ns_SockProc RadiusProc;
-static Ns_ThreadProc RadiusThread;
+static Ns_DriverProc RadiusProc;
+static Ns_SockProc RadiusCallback;
 
+static void RadiusInit(Server *server);
+static int RadiusRequestReply(RadiusRequest *req);
+static void RadiusRequestFree(RadiusRequest *req);
+static void RadiusRequestProcess(RadiusRequest *req);
+static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int len);
+static int RadiusRequestProc(void *arg, Ns_Conn *conn);;
 static int RadiusInterpInit(Tcl_Interp *interp, void *arg);
 static int RadiusCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
-static void RadiusInit(Server *server);
+static RadiusAttr *RadiusAttrFind(RadiusAttr *vp, char *name, int attr, int vendor);
+
 static void byteReverse(unsigned char *buf,  unsigned len);
 static void MD5Transform(unsigned int buf[4],  unsigned int const in[16]);
 
@@ -287,6 +299,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     char *path;
     SOCKET sock;
     Server *srvPtr;
+    Ns_DriverInitData init;
     static int initialized = 0;
 
     if (!initialized) {
@@ -299,32 +312,48 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     srvPtr->name = server;
     Tcl_InitHashTable(&srvPtr->userList, TCL_STRING_KEYS);
 
-    srvPtr->proc = Ns_ConfigGetValue(path, "proc");
-    if (!Ns_ConfigGetInt(path, "auth_port", &srvPtr->auth_port)) {
-        srvPtr->auth_port = RADIUS_AUTH_PORT;
+    Ns_ConfigGetBool(path, "drivermode", &srvPtr->drivermode);
+    srvPtr->address = Ns_ConfigGetValue(path, "address");
+    srvPtr->auth_proc = Ns_ConfigGetValue(path, "auth_proc");
+    srvPtr->acct_proc = Ns_ConfigGetValue(path, "acct_proc");
+    srvPtr->auth_port = Ns_ConfigIntRange(path, "port", RADIUS_AUTH_PORT, 1, 99999);
+    srvPtr->acct_port = Ns_ConfigIntRange(path, "acct_port", RADIUS_ACCT_PORT, 1, 99999);
+    /* Auth requests can be handled by callback or driver mode */
+    if (srvPtr->auth_proc != NULL && srvPtr->auth_port > 0) {
+        if (srvPtr->drivermode) {
+            init.version = NS_DRIVER_VERSION_1;
+            init.name = "nsradius";
+            init.proc = RadiusProc;
+            init.opts = NS_DRIVER_UDP;
+            init.arg = srvPtr;
+            init.path = NULL;
+            if (Ns_DriverInit(server, module, &init) != NS_OK) {
+                Ns_Log(Error, "nsradiusd: driver init failed.");
+                ns_free(srvPtr);
+                return NS_ERROR;
+            }
+            Ns_RegisterRequest(server, "RADIUS",  "/", RadiusRequestProc, NULL, srvPtr, 0);
+        } else {
+            if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->auth_port)) == -1) {
+                Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->auth_port, strerror(errno));
+            } else {
+                srvPtr->auth_sock = sock;
+                Ns_SockCallback(sock, RadiusCallback, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
+                Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->auth_port, srvPtr->auth_proc);
+            }
+        }
     }
-    if (!Ns_ConfigGetInt(path, "acct_port", &srvPtr->acct_port)) {
-        srvPtr->acct_port = RADIUS_ACCT_PORT;
+    /* Accounting port is always callback */
+    if (srvPtr->acct_proc != NULL && srvPtr->acct_port > 0) {
+        if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->acct_port)) == -1) {
+            Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->acct_port, strerror(errno));
+        } else {
+            srvPtr->acct_sock = sock;
+            Ns_SockCallback(sock, RadiusCallback, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
+            Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->acct_port, srvPtr->acct_proc);
+        }
     }
-    if (!(srvPtr->address = Ns_ConfigGetValue(path, "address"))) {
-        srvPtr->address = "0.0.0.0";
-    }
-
-    /* Configure RADIUS server */
-    if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->auth_port)) == -1) {
-        Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->auth_port, strerror(errno));
-    } else {
-        srvPtr->auth_sock = sock;
-        Ns_SockCallback(sock, RadiusProc, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
-        Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->auth_port, srvPtr->proc);
-    }
-    if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->acct_port)) == -1) {
-        Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->acct_port, strerror(errno));
-    } else {
-        srvPtr->acct_sock = sock;
-        Ns_SockCallback(sock, RadiusProc, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
-        Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->acct_port, srvPtr->proc);
-    }
+    
     RadiusInit(srvPtr);
     Ns_MutexSetName2(&srvPtr->dictMutex, "nsradiusd", "radiusDict");
     Ns_MutexSetName2(&srvPtr->userMutex, "nsradiusd", "radiusUser");
@@ -353,6 +382,103 @@ static int RadiusInterpInit(Tcl_Interp *interp, void *arg)
 {
     Tcl_CreateObjCommand(interp, "ns_radius", RadiusCmd, arg, NULL);
     return NS_OK;
+}
+
+static int RadiusProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
+{
+    Ns_DString *ds;
+    RadiusRequest *req;
+    Server *server = sock->driver->arg;
+
+    switch (cmd) {
+     case DriverAccept:
+         /*
+          * Read the packet and store it in the request buffer, registered proc
+          * then will use that data for processing
+          */
+
+         if (Ns_DriverSockRequest(sock, "RADIUS / RADIUS/1.0") == NS_OK) {
+             ds = Ns_DriverSockContent(sock);
+             Tcl_DStringSetLength(ds, sock->driver->bufsize);
+             req = RadiusRequestCreate(server, sock->sock, ds->string, ds->length);
+             Ns_Log(Error, "Req created %d", req->req_length);
+             if (req != NULL) {
+                 /* Adjust buffer to actual read size */
+                 ds->length = req->req_length;
+                 sock->sa = req->sa;
+                 sock->arg = req;
+                 return NS_OK;
+             }
+         }
+         break;
+
+     case DriverRecv:
+     case DriverSend:
+     case DriverClose:
+     case DriverKeep:
+         break;
+    }
+    return NS_ERROR;
+}
+
+static int RadiusRequestProc(void *arg, Ns_Conn *conn)
+{
+    char buf[282];
+    RadiusAttr *attr;
+    Ns_Sock *sock = Ns_ConnSockPtr(conn);
+    RadiusRequest *req = (RadiusRequest*)sock->arg;
+
+    if (req != NULL) {
+        RadiusRequestProcess(req);
+        /* For access log file */
+        attr = RadiusAttrFind(req->req, NULL, RADIUS_USER_NAME, 0);
+        if (attr) {
+            ns_free(conn->request->line);
+            snprintf(buf, sizeof(buf), "GET /%s RADIUS/1.0", attr->sval);
+            conn->request->line = ns_strdup(buf);
+            Ns_ConnSetContentSent(conn, req->reply_length);
+            Ns_ConnSetResponseStatus(conn, req->reply_code);
+        }
+    } else {
+        Ns_Log(Error, "Radius: FD %d: %s: invalid connection", req->sock, ns_inet_ntoa(sock->sa.sin_addr));
+    }
+    RadiusRequestFree(req);
+    return NS_OK;
+}
+
+/*
+ *----------------------------------------------------------------------
+ *
+ * RadiusProc --
+ *
+ *	Socket callback to receive RADIUS requests
+ *
+ * Results:
+ *	NS_TRUE
+ *
+ * Side effects:
+ *  	New RadiusThread will be created.
+ *
+ *----------------------------------------------------------------------
+ */
+
+static int RadiusCallback(SOCKET sock, void *arg, int when)
+{
+    RadiusRequest *req;
+    char buf[RADIUS_BUFFER_LEN];
+    Server *server = (Server*)arg;
+
+    switch(when) {
+     case NS_SOCK_READ:
+         req = RadiusRequestCreate(server, sock, buf, sizeof(buf));
+         if (req) {
+             RadiusRequestProcess(req);
+             RadiusRequestFree(req);
+         }
+         return NS_TRUE;
+    }
+    close(sock);
+    return NS_FALSE;
 }
 
 /*
@@ -908,7 +1034,7 @@ static RadiusAttr *RadiusAttrParse(Server *server, RadiusHeader *auth, int len, 
 
 static unsigned char *RadiusAttrPack(RadiusAttr *vp, unsigned char *ptr, short *length)
 {
-    unsigned char *p0, *vptr;
+    unsigned char *p0 = ptr, *vptr;
     unsigned int lvalue, len, vlen = 0;
 
     if (!ptr || !vp) {
@@ -963,14 +1089,14 @@ static unsigned char *RadiusAttrPack(RadiusAttr *vp, unsigned char *ptr, short *
     return ptr;
 }
 
-static void RadiusHeaderPack(RadiusHeader *hdr, int id, int code, RadiusVector vector, RadiusAttr *vp, char *secret)
+static int RadiusHeaderPack(RadiusHeader *hdr, int id, int code, RadiusVector vector, RadiusAttr *vp, char *secret)
 {
     MD5_CTX md5;
     unsigned char *ptr;
     RadiusVector digest;
 
     if (!hdr || !secret || !vector) {
-        return;
+        return 0;
     }
     // Generate random id
     if (!id) {
@@ -1029,6 +1155,7 @@ static void RadiusHeaderPack(RadiusHeader *hdr, int id, int code, RadiusVector v
         memcpy(hdr->vector, digest, RADIUS_VECTOR_LEN);
         break;
     }
+    return ntohs(hdr->length);
 }
 
 static void RadiusClientAdd(Server *server, char *host, char *secret)
@@ -1565,7 +1692,7 @@ again:
             Ns_DStringPrintf(&ds, "%d", req->req_id);
         } else
         if (!strcmp(Tcl_GetString(objv[2]), "ipaddr")) {
-            Ns_DStringAppend(&ds, ns_inet_ntoa(req->addr.sin_addr));
+            Ns_DStringAppend(&ds, ns_inet_ntoa(req->sa.sin_addr));
         } else
         if ((attr = RadiusAttrFind(req->req, Tcl_GetString(objv[2]), -1, vendor))) {
             RadiusAttrPrintf(attr, &ds, 0, 0);
@@ -1596,7 +1723,7 @@ again:
             break;
         }
         Ns_DStringInit(&ds);
-        Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", req->req_code, req->req_id, ns_inet_ntoa(req->addr.sin_addr));
+        Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", req->req_code, req->req_id, ns_inet_ntoa(req->sa.sin_addr));
         RadiusAttrPrintf(req->req, &ds, 1, 1);
         Tcl_AppendResult(interp, ds.string, 0);
         Ns_DStringFree(&ds);
@@ -1612,84 +1739,7 @@ again:
 /*
  *----------------------------------------------------------------------
  *
- * RadiusProc --
- *
- *	Socket callback to receive RADIUS requests
- *
- * Results:
- *	NS_TRUE
- *
- * Side effects:
- *  	New RadiusThread will be created.
- *
- *----------------------------------------------------------------------
- */
-
-static int RadiusProc(SOCKET sock, void *arg, int when)
-{
-    int len, alen;
-    RadiusAttr *attrs;
-    RadiusRequest *req;
-    RadiusClient *client;
-    struct sockaddr_in addr;
-    char buf[RADIUS_BUFFER_LEN];
-    Server *server = (Server*)arg;
-    RadiusHeader *hdr = (RadiusHeader*)buf;
-
-    switch(when) {
-     case NS_SOCK_READ:
-         alen = sizeof(struct sockaddr_in);
-         if ((len = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*)&addr, (socklen_t*)&alen)) <= 0) {
-             if (server->errors >= 0 && server->errors++ < 10) {
-                 Ns_Log(Error, "RadiusProc: radius: recvfrom error: %s", strerror(errno));
-             }
-             return NS_TRUE;
-         }
-         if (!(client = RadiusClientFind(server, addr.sin_addr, 0))) {
-             if (server->errors >= 0 && server->errors++ < 100) {
-                 Ns_Log(Error, "RadiusRequestCreate: unknown request from %s", ns_inet_ntoa(addr.sin_addr));
-             }
-             return NS_TRUE;
-         }
-         if (len < ntohs(hdr->length)) {
-             if (server->errors >= 0 && server->errors++ < 100) {
-                 Ns_Log(Error, "RadiusRequestCreate: bad packet length from %s", ns_inet_ntoa(addr.sin_addr));
-             }
-             return NS_TRUE;
-         }
-         if (!(attrs = RadiusAttrParse(server, hdr, len, client->secret))) {
-             if (server->errors >= 0 && server->errors++ < 100) {
-                 Ns_Log(Error, "RadiusRequestCreate: invalid request from %s", ns_inet_ntoa(addr.sin_addr));
-             }
-             return NS_TRUE;
-         }
-         // Allocate request structure
-         req = (RadiusRequest*)ns_calloc(1, sizeof(RadiusRequest));
-         req->sock = sock;
-         req->req = attrs;
-         req->client = client;
-         req->server = server;
-         req->req_id = hdr->id;
-         req->req_code = hdr->code;
-         req->reply_code = RADIUS_ACCESS_REJECT;
-         memcpy(&req->addr, &addr, sizeof(addr));
-         memcpy(req->vector, hdr->vector, RADIUS_VECTOR_LEN);
-         RadiusThread(req);
-         RadiusHeaderPack(hdr, req->req_id, req->reply_code, req->vector, req->reply, req->client->secret);
-         sendto(req->sock, buf, ntohs(hdr->length), 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
-         RadiusAttrFree(&req->req);
-         RadiusAttrFree(&req->reply);
-         ns_free(req);
-         return NS_TRUE;
-    }
-    close(sock);
-    return NS_FALSE;
-}
-
-/*
- *----------------------------------------------------------------------
- *
- * RadiusThread --
+ * RadiusRequestProcess --
  *
  *	Tcl handler for a radius requests
  *
@@ -1697,21 +1747,102 @@ static int RadiusProc(SOCKET sock, void *arg, int when)
  *	None.
  *
  * Side effects:
- *      None
+ *      Sends reply back to the client
  *----------------------------------------------------------------------
  */
 
-static void RadiusThread(void *arg)
+static void RadiusRequestProcess(RadiusRequest *req)
 {
-    RadiusRequest *req = (RadiusRequest *)arg;
     Tcl_Interp *interp = Ns_TclAllocateInterp(req->server->name);
 
     Ns_TlsSet(&radiusTls, req);
-    if (Tcl_Eval(interp, req->server->proc) != TCL_OK) {
-        Ns_TclLogError(interp);
+
+    switch (req->req_code) {
+     case RADIUS_ACCOUNTING_REQUEST:
+     case RADIUS_ACCOUNTING_STATUS:
+        if (req->server->acct_proc != NULL && Tcl_Eval(interp, req->server->acct_proc) != TCL_OK) {
+            Ns_TclLogError(interp);
+        }
+        break;
+
+     default:
+        if (req->server->auth_proc != NULL && Tcl_Eval(interp, req->server->auth_proc) != TCL_OK) {
+            Ns_TclLogError(interp);
+        }
     }
     Ns_TclDeAllocateInterp(interp);
     Ns_TlsSet(&radiusTls, 0);
+    RadiusRequestReply(req);
+}
+
+static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int buflen)
+{
+    int len;
+    RadiusAttr *attrs;
+    RadiusRequest *req;
+    RadiusClient *client;
+    struct sockaddr_in sa;
+    RadiusHeader *hdr = (RadiusHeader*)buf;
+    socklen_t salen = sizeof(struct sockaddr_in);
+
+    if ((len = recvfrom(sock, buf, buflen, 0, (struct sockaddr*)&sa, &salen)) <= 0) {
+        if (server->errors >= 0 && server->errors++ < 10) {
+            Ns_Log(Error, "RadiusProc: radius: recvfrom error: %s", strerror(errno));
+        }
+        return NULL;
+    }
+    if (!(client = RadiusClientFind(server, sa.sin_addr, 0))) {
+        if (server->errors >= 0 && server->errors++ < 100) {
+            Ns_Log(Error, "RadiusRequestCreate: unknown request from %s", ns_inet_ntoa(sa.sin_addr));
+        }
+        return NULL;
+    }
+    if (len < ntohs(hdr->length)) {
+        if (server->errors >= 0 && server->errors++ < 100) {
+            Ns_Log(Error, "RadiusRequestCreate: bad packet length from %s", ns_inet_ntoa(sa.sin_addr));
+        }
+        return NULL;
+    }
+    if (!(attrs = RadiusAttrParse(server, hdr, len, client->secret))) {
+        if (server->errors >= 0 && server->errors++ < 100) {
+            Ns_Log(Error, "RadiusRequestCreate: invalid request from %s", ns_inet_ntoa(sa.sin_addr));
+        }
+        return NULL;
+    }
+    // Allocate request structure
+    req = (RadiusRequest*)ns_calloc(1, sizeof(RadiusRequest));
+    req->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    req->req = attrs;
+    req->client = client;
+    req->server = server;
+    req->req_id = hdr->id;
+    req->req_code = hdr->code;
+    req->req_length = len;
+    req->reply_code = RADIUS_ACCESS_REJECT;
+    req->buffer = buf;
+    req->buffer_length = buflen;
+    memcpy(&req->sa, &sa, sizeof(sa));
+    memcpy(req->vector, hdr->vector, RADIUS_VECTOR_LEN);
+    return req;
+}
+
+static void RadiusRequestFree(RadiusRequest *req)
+{
+    if (req) {
+        if (req->sock > 0) {
+            close(req->sock);
+        }
+        RadiusAttrFree(&req->req);
+        RadiusAttrFree(&req->reply);
+        ns_free(req);
+    }
+}
+
+static int RadiusRequestReply(RadiusRequest *req)
+{
+    RadiusHeader *hdr = (RadiusHeader*)req->buffer;
+    req->reply_length = RadiusHeaderPack(hdr, req->req_id, req->reply_code, req->vector, req->reply, req->client->secret);
+    return sendto(req->sock, req->buffer, ntohs(hdr->length), 0, (struct sockaddr*)&req->sa, sizeof(struct sockaddr_in));
 }
 
 /*

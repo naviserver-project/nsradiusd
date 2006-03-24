@@ -429,7 +429,7 @@ static int RadiusRequestProc(void *arg, Ns_Conn *conn)
             Ns_ConnSetResponseStatus(conn, req->reply_code);
         }
     } else {
-        Ns_Log(Error, "Radius: FD %d: %s: invalid connection", req->sock, ns_inet_ntoa(sock->sa.sin_addr));
+        Ns_Log(Error, "Radius: FD %d: %s: invalid connection", sock->sock, ns_inet_ntoa(sock->sa.sin_addr));
     }
     RadiusRequestFree(req);
     return NS_OK;

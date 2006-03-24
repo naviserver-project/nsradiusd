@@ -11,12 +11,15 @@ ns_schedule_proc -once 0 radius::init
 proc radius::init {} {
 
     radius::dictinit
-    # Load local system users
-    radius::loadusers
-    # Load users file
+    radius::refresh
+    ns_log Notice radius::init: loaded
+}
+
+# Load RADIUS config file
+proc radius::refresh {} {
+
     set config [file dirname [ns_info config]]/radius.tcl
     if { [file exists $config] } { source $config }
-    ns_log Notice radius::init: loaded
 }
 
 # RADIUS server handler
@@ -62,7 +65,7 @@ proc radius::server { args } {
        } else {
          ns_radius reqset code 3
        }
-       ns_log Notice radiusd: $name: auth = $ok
+       ns_log Notice radiusd: $name: auth = $ok from [ns_radius reqget ipaddr]
      }
      
      4 {
@@ -77,18 +80,38 @@ proc radius::server { args } {
     }
 }
 
-# Load local users from /etc/sahdow if accessable
+# Load local users from /etc/shadow if accessable
 proc radius::loadusers {} {
 
     if { [catch { set fd [open /etc/shadow] }] } { return }
+    set count 0
     while { ![eof $fd] } {
       set line [split [gets $fd] :]
       # Keep only non empty passwords
       if { [string index [lindex $line 1] 0] == {$} } {
         ns_radius useradd [lindex $line 0] "Crypt-Password [lindex $line 1] Auth-Profile System-Profile"
+        incr count
       }
     }
     close $fd
+    ns_log Notice radius::loadusers: loaded $count users
+}
+
+# Load hosts from /etc/hosts if accessable
+proc radius::loadhosts { secret } {
+
+    if { [catch { set fd [open /etc/hosts] }] } { return }
+    set count 0
+    while { ![eof $fd] } {
+      set line [string trim [gets $fd]]
+      switch -- [string index $line 0] {
+       "#" - "" { continue }
+      }
+      ns_radius clientadd [lindex $line 0] $secret
+      incr count
+    }
+    close $fd
+    ns_log Notice radius::loadhosts: loaded $count hosts
 }
 
 # Initialization of RADIUS dictionaries

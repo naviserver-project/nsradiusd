@@ -832,11 +832,68 @@ static void RadiusPasswdEncrypt(RadiusAttr *attr, RadiusVector vector, char *sec
     memcpy(attr->sval, pw, RADIUS_STRING_LEN);
 }
 
+/* len == -1 means string representation, need to convert into native format */
+static int RadiusAttrUpdate(RadiusAttr *vp, char *val, int len, RadiusDict *dict)
+{
+    RadiusValue *value;
+
+    switch(vp->type) {
+     case RADIUS_TYPE_STRING:
+         if (len <= 0) {
+             len = strlen((const char*)val);
+         }
+         vp->lval = len < RADIUS_STRING_LEN ? len : RADIUS_STRING_LEN;
+         memcpy(vp->sval, val, vp->lval);
+         Ns_StrTrimRight((char*)vp->sval);
+         break;
+
+     case RADIUS_TYPE_FILTER_BINARY:
+         if (len <= 0) {
+             len = strlen((const char*)val);
+         }
+         vp->lval = len < RADIUS_STRING_LEN ? len : RADIUS_STRING_LEN;
+         memcpy(vp->sval, val, vp->lval);
+         break;
+
+     case RADIUS_TYPE_INTEGER:
+         // Try values for that attribute
+         if (isalpha(val[0]) && dict) {
+             for (value = dict->values;  value; value = value->next) {
+                 if (!strcasecmp(value->name, val)) {
+                     vp->lval = value->value;
+                     return 1;
+                 }
+             }
+         }
+
+     case RADIUS_TYPE_DATE:
+         if (len < 0) {
+             vp->lval = atol((const char*)val);
+         } else
+         if (len == sizeof(vp->lval)) {
+             vp->lval = ntohl(*(unsigned long *)val);
+         }
+         break;
+
+     case RADIUS_TYPE_IPADDR:
+         if (len < 0) {
+             vp->lval = inet_addr(val);
+         } else
+         if (len == sizeof(vp->lval)) {
+             vp->lval = ntohl(*(unsigned long *)val);
+         }
+         break;
+
+     default:
+         return 0;
+    }
+    return 1;
+}
+
 static RadiusAttr *RadiusAttrCreate(Server *server, char *name, int attr, int vendor, char *val, int len)
 {
     RadiusAttr *vp;
     RadiusDict *dict;
-    RadiusValue *value;
 
     dict = RadiusDictFind(server, name, attr, vendor, 0);
     if (!dict && attr <= 0) {
@@ -854,46 +911,9 @@ static RadiusAttr *RadiusAttrCreate(Server *server, char *name, int attr, int ve
         sprintf(vp->name, "A%d-V%d", attr, vendor);
         vp->type = RADIUS_TYPE_STRING;
     }
-    switch(vp->type) {
-     case RADIUS_TYPE_STRING:
-         if (len <= 0) {
-             len = strlen((const char*)val);
-         }
-         vp->lval = len < RADIUS_STRING_LEN ? len : RADIUS_STRING_LEN;
-         memcpy(vp->sval, val, vp->lval);
-         Ns_StrTrimRight((char*)vp->sval);
-         break;
-     case RADIUS_TYPE_FILTER_BINARY:
-         if (len <= 0) {
-             len = strlen((const char*)val);
-         }
-         vp->lval = len < RADIUS_STRING_LEN ? len : RADIUS_STRING_LEN;
-         memcpy(vp->sval, val, vp->lval);
-         break;
-     case RADIUS_TYPE_INTEGER:
-         // Try values for that attribute
-         if (isalpha(val[0])) {
-             for (value = dict->values;  value; value = value->next) {
-                 if (!strcasecmp(value->name, val)) {
-                     vp->lval = value->value;
-                     return vp;
-                 }
-             }
-         }
-     case RADIUS_TYPE_DATE:
-     case RADIUS_TYPE_IPADDR:
-         if (len > 0) {
-             vp->lval = ntohl(*(unsigned long *)val);
-         } else
-         if (len < 0) {
-             vp->lval = atol((const char*)val);
-         } else {
-             memcpy(&vp->lval, val, sizeof(vp->lval));
-         }
-         break;
-     default:
-         ns_free(vp);
-         vp = 0;
+    if (!RadiusAttrUpdate(vp, val, len, dict)) {
+        ns_free(vp);
+        vp = 0;
     }
     return vp;
 }
@@ -1155,15 +1175,22 @@ static void RadiusClientAdd(Server *server, char *host, char *secret)
     if (Ns_GetSockAddr(&addr, host, 0) != NS_OK) {
         return;
     }
-    client = (RadiusClient*)ns_calloc(1, sizeof(RadiusClient));
-    client->addr = addr.sin_addr;
-    strncpy(client->secret, secret, RADIUS_VECTOR_LEN);
     Ns_MutexLock(&server->clientMutex);
-    client->next = server->clientList;
-    if (client->next) {
-        client->next->prev = client;
+    for (client = server->clientList; client; client = client->next) {
+        if (!memcmp(&client->addr, &addr, sizeof(struct in_addr))) {
+            break;
+        }
     }
-    server->clientList = client;
+    if (!client) {
+        client = (RadiusClient*)ns_calloc(1, sizeof(RadiusClient));
+        client->addr = addr.sin_addr;
+        client->next = server->clientList;
+        if (client->next) {
+            client->next->prev = client;
+        }
+        server->clientList = client;
+    }
+    strncpy(client->secret, secret, RADIUS_VECTOR_LEN);
     Ns_MutexUnlock(&server->clientMutex);
 }
 
@@ -1637,6 +1664,10 @@ again:
             for (i = 0; i < len; i+= 2) {
                 if (Tcl_ListObjIndex(0, objv[3], i, &key) == TCL_OK &&
                     Tcl_ListObjIndex(0, objv[3], i+1, &val) == TCL_OK && key && val) {
+                    if ((attr = RadiusAttrFind(user->config, Tcl_GetString(key), -1, -1))) {
+                        dict = RadiusDictFind(server, 0, attr->attribute, attr->vendor, 0);
+                        RadiusAttrUpdate(attr, Tcl_GetString(val), -1, dict);
+                    } else
                     if ((attr = RadiusAttrCreate(server, Tcl_GetString(key), -1, -1, Tcl_GetString(val), -1))) {
                         RadiusAttrLink(&user->config, attr);
                     }
@@ -1647,6 +1678,10 @@ again:
                 for (i = 0; i < len; i+= 2) {
                     if (Tcl_ListObjIndex(0, objv[4], i, &key) == TCL_OK &&
                         Tcl_ListObjIndex(0, objv[4], i+1, &val) == TCL_OK && key && val) {
+                        if ((attr = RadiusAttrFind(user->reply, Tcl_GetString(key), -1, -1))) {
+                            dict = RadiusDictFind(server, 0, attr->attribute, attr->vendor, 0);
+                            RadiusAttrUpdate(attr, Tcl_GetString(val), -1, dict);
+                        } else
                         if ((attr = RadiusAttrCreate(server, Tcl_GetString(key), -1, -1, Tcl_GetString(val), -1))) {
                             RadiusAttrLink(&user->reply, attr);
                         }

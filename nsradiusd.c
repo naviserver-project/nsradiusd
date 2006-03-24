@@ -234,6 +234,7 @@ typedef struct _server {
    RadiusClient *clientList;
    Ns_Mutex dictMutex;
    RadiusDict *dictList;
+   struct sockaddr_in sa;
 } Server;
 
 typedef struct _radiusRequest {
@@ -313,6 +314,10 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     srvPtr->address = Ns_ConfigGetValue(path, "address");
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
     srvPtr->port = Ns_ConfigIntRange(path, "port", RADIUS_AUTH_PORT, 1, 99999);
+    if (Ns_GetSockAddr(&srvPtr->sa, srvPtr->address, 0) != NS_OK) {
+        ns_free(srvPtr);
+        return NS_ERROR;
+    }
     /* Auth requests can be handled by callback or driver mode */
     if (srvPtr->proc != NULL && srvPtr->port > 0) {
         if (srvPtr->drivermode) {
@@ -1785,6 +1790,10 @@ static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf
     // Allocate request structure
     req = (RadiusRequest*)ns_calloc(1, sizeof(RadiusRequest));
     req->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    // Bind to specified IP address
+    if (server->address) {
+        bind(req->sock, (struct sockaddr*)&server->sa, sizeof(server->sa));
+    }
     req->req = attrs;
     req->client = client;
     req->server = server;

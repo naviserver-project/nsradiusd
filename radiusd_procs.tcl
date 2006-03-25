@@ -2,24 +2,86 @@
 # March 2006
 
 namespace eval radius {
-
 }
 
 ns_schedule_proc -once 0 radius::init
+ns_schedule_proc 60 radius::refresh
 
 # Global RADIUS initialization
 proc radius::init {} {
 
+    nsv_array set nsradiusd { init 1 secret localsecret }
     radius::dictinit
     radius::refresh
     ns_log Notice radius::init: loaded
 }
 
-# Load RADIUS config file
+# Set/get global client secret
+proc radius::secret { { secret "" } } {
+
+    if { $secret != "" } {
+      nsv_set nsradiusd secret $secret
+    }
+    return [nsv_get nsradiusd secret]
+}
+
+# Load all RADIUS config files
 proc radius::refresh {} {
 
-    set config [file dirname [ns_info config]]/radius.tcl
-    if { [file exists $config] } { source $config }
+    radius::loadfile source [file dirname [ns_info config]]/radius.tcl
+    radius::loadfile radius::loadusers /etc/shadow
+    radius::loadfile radius::loadhosts /etc/hosts
+}
+
+# Load config file if it was modified or not loaded yet
+proc radius::loadfile { proc file } {
+
+    set timestamp 0
+    set mtime [file mtime $file]
+    if { [nsv_exists nsradiusd $file] } {
+      set timestamp [nsv_get nsradiusd $file]
+    }
+    if { [file exists $file] && $timestamp < $mtime } {
+      if { [catch { eval $proc $file } errmsg] } {
+        ns_log Error radius::loadfile: $file: $errmsg
+      }
+      nsv_set nsradiusd $file $mtime
+    }
+}
+
+# Load local users from /etc/shadow if accessable
+proc radius::loadusers { file } {
+
+    if { [catch { set fd [open $file] }] } { return }
+    set count 0
+      while { ![eof $fd] } {
+      set line [split [gets $fd] :]
+      # Keep only non empty passwords
+      if { [string index [lindex $line 1] 0] == {$} } {
+        ns_radius useradd [lindex $line 0] "Crypt-Password [lindex $line 1] Auth-Profile System-Profile"
+        incr count
+      }
+    }
+    close $fd
+    ns_log Notice radius::loadusers: loaded $count users
+}
+
+# Load hosts from /etc/hosts if accessable
+proc radius::loadhosts { file } {
+
+    if { [catch { set fd [open $file] }] } { return }
+    set secret [radius::secret]
+    set count 0
+    while { ![eof $fd] } {
+      set line [string trim [gets $fd]]
+      switch -- [string index $line 0] {
+       "#" - "" { continue }
+      }
+      ns_radius clientadd [lindex $line 0] $secret
+      incr count
+    }
+    close $fd
+    ns_log Notice radius::loadhosts: loaded $count hosts
 }
 
 # RADIUS server handler
@@ -78,40 +140,6 @@ proc radius::server { args } {
        ns_log Error radiusd: unknown request: [ns_radius reqlist]
      }
     }
-}
-
-# Load local users from /etc/shadow if accessable
-proc radius::loadusers {} {
-
-    if { [catch { set fd [open /etc/shadow] }] } { return }
-    set count 0
-    while { ![eof $fd] } {
-      set line [split [gets $fd] :]
-      # Keep only non empty passwords
-      if { [string index [lindex $line 1] 0] == {$} } {
-        ns_radius useradd [lindex $line 0] "Crypt-Password [lindex $line 1] Auth-Profile System-Profile"
-        incr count
-      }
-    }
-    close $fd
-    ns_log Notice radius::loadusers: loaded $count users
-}
-
-# Load hosts from /etc/hosts if accessable
-proc radius::loadhosts { secret } {
-
-    if { [catch { set fd [open /etc/hosts] }] } { return }
-    set count 0
-    while { ![eof $fd] } {
-      set line [string trim [gets $fd]]
-      switch -- [string index $line 0] {
-       "#" - "" { continue }
-      }
-      ns_radius clientadd [lindex $line 0] $secret
-      incr count
-    }
-    close $fd
-    ns_log Notice radius::loadhosts: loaded $count hosts
 }
 
 # Initialization of RADIUS dictionaries

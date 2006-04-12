@@ -225,6 +225,7 @@ typedef struct _server {
    char *proc;
    int port;
    int sock;
+   int debug;
    short errors;
    int drivermode;
    Ns_Mutex userMutex;
@@ -313,6 +314,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     Ns_ConfigGetBool(path, "drivermode", &srvPtr->drivermode);
     srvPtr->address = Ns_ConfigGetValue(path, "address");
     srvPtr->proc = Ns_ConfigGetValue(path, "proc");
+    srvPtr->debug = Ns_ConfigIntRange(path, "debug", 0, 0, 9);
     srvPtr->port = Ns_ConfigIntRange(path, "port", RADIUS_AUTH_PORT, 1, 99999);
     if (Ns_GetSockAddr(&srvPtr->sa, srvPtr->address, 0) != NS_OK) {
         ns_free(srvPtr);
@@ -918,7 +920,7 @@ static RadiusAttr *RadiusAttrCreate(Server *server, char *name, int attr, int ve
     return vp;
 }
 
-static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int printall)
+static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int printall, int vendor)
 {
     unsigned i;
     char buf[64];
@@ -929,7 +931,11 @@ static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int 
             Ns_DStringAppend(ds, " ");
         }
         if (printname) {
-            Ns_DStringPrintf(ds, "%s ", attr->name);
+            Ns_DStringAppend(ds, attr->name);
+            if (vendor) {
+                Ns_DStringPrintf(ds, "/%d", attr->vendor);
+            }
+            Ns_DStringAppend(ds, " ");
         }
         switch(attr->type) {
          case RADIUS_TYPE_DATE:
@@ -1027,6 +1033,9 @@ static RadiusAttr *RadiusAttrParse(Server *server, RadiusHeader *auth, int len, 
             length -= 6;
         }
         if ((vp = RadiusAttrCreate(server, 0, attr, vendor, (char*)ptr, attrlen))) {
+            if (server->debug) {
+                Ns_Log(Notice, "RadiusAttrParse: %s/%d/%d = %u/%s", vp->name, vp->attribute, vp->vendor, vp->lval, (isprint(vp->sval[0]) ? (char*)vp->sval : (char*)""));
+            }
             RadiusAttrLink(&head, vp);
             /* Perform decryption if necessary */
             switch(vp->attribute) {
@@ -1041,7 +1050,7 @@ static RadiusAttr *RadiusAttrParse(Server *server, RadiusHeader *auth, int len, 
     return head;
 }
 
-static unsigned char *RadiusAttrPack(RadiusAttr *vp, unsigned char *ptr, short *length)
+static unsigned char *RadiusAttrPack(Server *server, RadiusAttr *vp, unsigned char *ptr, short *length)
 {
     unsigned char *p0 = ptr, *vptr;
     unsigned int lvalue, len, vlen = 0;
@@ -1095,10 +1104,13 @@ static unsigned char *RadiusAttrPack(RadiusAttr *vp, unsigned char *ptr, short *
     if (vp->vendor > 0) {
         *p0 += len + 2;
     }
+    if (server->debug) {
+        Ns_Log(Notice, "RadiusAttrPack: %s/%d/%d = %u/%s", vp->name, vp->attribute, vp->vendor, vp->lval, vp->sval);
+    }
     return ptr;
 }
 
-static int RadiusHeaderPack(RadiusHeader *hdr, int id, int code, RadiusVector vector, RadiusAttr *vp, char *secret)
+static int RadiusHeaderPack(Server *server, RadiusHeader *hdr, int id, int code, RadiusVector vector, RadiusAttr *vp, char *secret)
 {
     MD5_CTX md5;
     unsigned char *ptr;
@@ -1117,6 +1129,9 @@ static int RadiusHeaderPack(RadiusHeader *hdr, int id, int code, RadiusVector ve
     hdr->length = sizeof(RadiusHeader);
     ptr = ((unsigned char*)hdr) + hdr->length;
     memcpy(hdr->vector, vector, RADIUS_VECTOR_LEN);
+    if (server->debug) {
+        Ns_Log(Notice, "RadiusHeaderPack: id=%d, code=%d, secret=%s", id, code, secret);
+    }
     // Pack attributes into the packet
     for (;vp; vp = vp->next) {
         switch(vp->attribute) {
@@ -1124,7 +1139,7 @@ static int RadiusHeaderPack(RadiusHeader *hdr, int id, int code, RadiusVector ve
             RadiusPasswdEncrypt(vp, hdr->vector, secret, 0, 0);
             break;
         }
-        ptr = RadiusAttrPack(vp, ptr, (short*)&hdr->length);
+        ptr = RadiusAttrPack(server, vp, ptr, (short*)&hdr->length);
     }
     hdr->length = htons(hdr->length);
     // Finish packing
@@ -1275,9 +1290,9 @@ static RadiusUser *RadiusUserFind(Server *server, char *user, Ns_DString *ds)
     if (entry) {
         rec = (RadiusUser*)Tcl_GetHashValue(entry);
         Ns_DStringAppend(ds, "{");
-        RadiusAttrPrintf(rec->config, ds, 1, 1);
+        RadiusAttrPrintf(rec->config, ds, 1, 1, 0);
         Ns_DStringAppend(ds, "} {");
-        RadiusAttrPrintf(rec->reply, ds, 1, 1);
+        RadiusAttrPrintf(rec->reply, ds, 1, 1, 0);
         Ns_DStringAppend(ds, "} ");
     }
     Ns_MutexUnlock(&server->userMutex);
@@ -1297,7 +1312,7 @@ static int RadiusUserAttrFind(Server *server, char *user, Ns_DString *ds, char *
         rec = (RadiusUser*)Tcl_GetHashValue(entry);
         attr = RadiusAttrFind(reply ? rec->reply : rec->config, name, -1, -1);
         if (attr) {
-            RadiusAttrPrintf(attr, ds, 0, 0);
+            RadiusAttrPrintf(attr, ds, 0, 0, 0);
             rc = 1;
         }
     }
@@ -1317,9 +1332,9 @@ static void RadiusUserList(Server *server, char *user, Ns_DString *ds)
       if (!user || Tcl_StringCaseMatch(Tcl_GetHashKey(&server->userList, entry), user, 1)) {
           rec = (RadiusUser*)Tcl_GetHashValue(entry);
           Ns_DStringPrintf(ds, "%s {", Tcl_GetHashKey(&server->userList, entry));
-          RadiusAttrPrintf(rec->config, ds, 1, 1);
+          RadiusAttrPrintf(rec->config, ds, 1, 1, 0);
           Ns_DStringAppend(ds, "} {");
-          RadiusAttrPrintf(rec->reply, ds, 1, 1);
+          RadiusAttrPrintf(rec->reply, ds, 1, 1, 0);
           Ns_DStringAppend(ds, "} ");
       }
       entry = Tcl_NextHashEntry(&search);
@@ -1368,14 +1383,14 @@ static int RadiusCmd(ClientData arg,  Tcl_Interp *interp, int objc, Tcl_Obj *CON
         cmdDictList, cmdDictGet, cmdDictDel, cmdDictAdd, cmdDictValue, cmdDictLabel,
         cmdClientAdd, cmdClientList, cmdClientDel, cmdClientGet,
         cmdUserAdd, cmdUserFind, cmdUserDel, cmdUserList, cmdUserAttrFind,
-        cmdReset
+        cmdReset, cmdDebug
     };
     static const char *sCmd[] = {
         "send", "reqget", "reqset", "reqlist", "reqreply",
         "dictlist", "dictget", "dictdel", "dictadd", "dictvalue", "dictlabel",
         "clientadd", "clientlist", "clientdel", "clientget",
         "useradd", "userfind", "userdel", "userlist", "userattrfind",
-        "reset",
+        "reset", "debug",
         0
     };
     int cmd;
@@ -1427,7 +1442,7 @@ static int RadiusCmd(ClientData arg,  Tcl_Interp *interp, int objc, Tcl_Obj *CON
         // Build an request
         hdr = (RadiusHeader *)buffer;
         RadiusVectorCreate(vector);
-        RadiusHeaderPack(hdr, 0, code, vector, vp, (char*)Tcl_GetString(objv[4]));
+        RadiusHeaderPack(server, hdr, 0, code, vector, vp, (char*)Tcl_GetString(objv[4]));
         RadiusAttrFree(&vp);
         memcpy(vector, hdr->vector, RADIUS_VECTOR_LEN);
         id = hdr->id;
@@ -1472,7 +1487,7 @@ again:
         Ns_DStringInit(&ds);
         Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", hdr->code, hdr->id, ns_inet_ntoa(sa.sin_addr));
         if ((vp = RadiusAttrParse(server, hdr, len, Tcl_GetString(objv[4])))) {
-            RadiusAttrPrintf(vp, &ds, 1, 1);
+            RadiusAttrPrintf(vp, &ds, 1, 1, 0);
             RadiusAttrFree(&vp);
         }
         Tcl_AppendResult(interp, ds.string, 0);
@@ -1719,7 +1734,7 @@ again:
             Ns_DStringAppend(&ds, ns_inet_ntoa(req->sa.sin_addr));
         } else
         if ((attr = RadiusAttrFind(req->req, Tcl_GetString(objv[2]), -1, vendor))) {
-            RadiusAttrPrintf(attr, &ds, 0, 0);
+            RadiusAttrPrintf(attr, &ds, 0, 0, server->debug);
         }
         Tcl_AppendResult(interp, ds.string, 0);
         Ns_DStringFree(&ds);
@@ -1747,7 +1762,7 @@ again:
         }
         Ns_DStringInit(&ds);
         Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", req->req_code, req->req_id, ns_inet_ntoa(req->sa.sin_addr));
-        RadiusAttrPrintf(req->req, &ds, 1, 1);
+        RadiusAttrPrintf(req->req, &ds, 1, 1, server->debug);
         Tcl_AppendResult(interp, ds.string, 0);
         Ns_DStringFree(&ds);
         break;
@@ -1759,7 +1774,7 @@ again:
         }
         Ns_DStringInit(&ds);
         Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", req->reply_code, req->req_id, ns_inet_ntoa(req->sa.sin_addr));
-        RadiusAttrPrintf(req->reply, &ds, 1, 1);
+        RadiusAttrPrintf(req->reply, &ds, 1, 1, server->debug);
         Tcl_AppendResult(interp, ds.string, 0);
         Ns_DStringFree(&ds);
         break;
@@ -1767,6 +1782,14 @@ again:
      case cmdReset:
         server->errors = 0;
         break;
+
+     case cmdDebug:
+        if (objc > 2) {
+            server->debug = atoi(Tcl_GetString(objv[2]));
+        }
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(server->debug));
+        break;
+
     }
     return TCL_OK;
 }
@@ -1836,11 +1859,7 @@ static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf
     }
     // Allocate request structure
     req = (RadiusRequest*)ns_calloc(1, sizeof(RadiusRequest));
-    req->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    // Bind to specified IP address
-    if (server->address) {
-        bind(req->sock, (struct sockaddr*)&server->sa, sizeof(server->sa));
-    }
+    req->sock = dup(sock);
     req->req = attrs;
     req->client = client;
     req->server = server;
@@ -1870,7 +1889,10 @@ static void RadiusRequestFree(RadiusRequest *req)
 static int RadiusRequestReply(RadiusRequest *req)
 {
     RadiusHeader *hdr = (RadiusHeader*)req->buffer;
-    req->reply_length = RadiusHeaderPack(hdr, req->req_id, req->reply_code, req->vector, req->reply, req->client->secret);
+    req->reply_length = RadiusHeaderPack(req->server, hdr, req->req_id, req->reply_code, req->vector, req->reply, req->client->secret);
+    if (req->server->debug) {
+        Ns_Log(Notice, "RadiusRequestReply: id=%d, len=%d, ipaddr=%s", req->req_id, req->reply_length, ns_inet_ntoa(req->sa.sin_addr));
+    }
     return sendto(req->sock, req->buffer, ntohs(hdr->length), 0, (struct sockaddr*)&req->sa, sizeof(struct sockaddr_in));
 }
 

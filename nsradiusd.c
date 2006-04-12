@@ -1364,14 +1364,14 @@ static int RadiusCmd(ClientData arg,  Tcl_Interp *interp, int objc, Tcl_Obj *CON
     RadiusValue *value;
     RadiusRequest *req;
     enum commands {
-        cmdSend, cmdReqGet, cmdReqSet, cmdReqList,
+        cmdSend, cmdReqGet, cmdReqSet, cmdReqList, cmdReqReply,
         cmdDictList, cmdDictGet, cmdDictDel, cmdDictAdd, cmdDictValue, cmdDictLabel,
         cmdClientAdd, cmdClientList, cmdClientDel, cmdClientGet,
         cmdUserAdd, cmdUserFind, cmdUserDel, cmdUserList, cmdUserAttrFind,
         cmdReset
     };
     static const char *sCmd[] = {
-        "send", "reqget", "reqset", "reqlist",
+        "send", "reqget", "reqset", "reqlist", "reqreply",
         "dictlist", "dictget", "dictdel", "dictadd", "dictvalue", "dictlabel",
         "clientadd", "clientlist", "clientdel", "clientget",
         "useradd", "userfind", "userdel", "userlist", "userattrfind",
@@ -1748,6 +1748,18 @@ again:
         Ns_DStringInit(&ds);
         Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", req->req_code, req->req_id, ns_inet_ntoa(req->sa.sin_addr));
         RadiusAttrPrintf(req->req, &ds, 1, 1);
+        Tcl_AppendResult(interp, ds.string, 0);
+        Ns_DStringFree(&ds);
+        break;
+
+     case cmdReqReply:
+        req = (RadiusRequest*)Ns_TlsGet(&radiusTls);
+        if (!req) {
+            break;
+        }
+        Ns_DStringInit(&ds);
+        Ns_DStringPrintf(&ds, "code %d id %d ipaddr %s ", req->reply_code, req->req_id, ns_inet_ntoa(req->sa.sin_addr));
+        RadiusAttrPrintf(req->reply, &ds, 1, 1);
         Tcl_AppendResult(interp, ds.string, 0);
         Ns_DStringFree(&ds);
         break;

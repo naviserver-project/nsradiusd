@@ -90,7 +90,7 @@ proc radius::server { args } {
     switch -- [ns_radius reqget code] {
      1 {
        # Authentication request
-       set ok 0
+       set status Fail
        set name [ns_radius reqget User-Name]
        set passwd [ns_radius reqget User-Password]
        set user [ns_radius userfind $name]
@@ -99,14 +99,14 @@ proc radius::server { args } {
           user-password {
             # Clear text password
             if { $passwd == $val } {
-              set ok 1
+              set status OK
             }
           }
           
           crypt-password {
             # Encrypted password
             if { [ns_crypt $passwd $val] == $val } {
-              set ok 1
+              set status OK
             }
           }
           
@@ -119,7 +119,7 @@ proc radius::server { args } {
           }
          }
        }
-       if { $ok } {
+       if { $status == "OK" } {
          ns_radius reqset code 2
          foreach { key val } [lindex $user 1] {
            ns_radius reqset $key $val
@@ -127,7 +127,7 @@ proc radius::server { args } {
        } else {
          ns_radius reqset code 3
        }
-       ns_log Notice radiusd: $name: auth = $ok from [ns_radius reqget ipaddr]
+       ns_log Notice radiusd: $name: auth = $status, [ns_radius reqreply]
      }
      
      4 {

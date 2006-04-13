@@ -36,16 +36,18 @@ proc radius::refresh {} {
 # Load config file if it was modified or not loaded yet
 proc radius::loadfile { proc file } {
 
-    set timestamp 0
-    set mtime [file mtime $file]
-    if { [nsv_exists nsradiusd $file] } {
-      set timestamp [nsv_get nsradiusd $file]
-    }
-    if { [file exists $file] && $timestamp < $mtime } {
-      if { [catch { eval $proc $file } errmsg] } {
-        ns_log Error radius::loadfile: $file: $errmsg
+    if { [file exists $file] } {
+      set timestamp 0
+      set mtime [file mtime $file]
+      if { [nsv_exists nsradiusd $file] } {
+        set timestamp [nsv_get nsradiusd $file]
       }
-      nsv_set nsradiusd $file $mtime
+      if { $timestamp < $mtime } {
+        if { [catch { eval $proc $file } errmsg] } {
+          ns_log Error radius::loadfile: $file: $errmsg
+        }
+        nsv_set nsradiusd $file $mtime
+      }
     }
 }
 

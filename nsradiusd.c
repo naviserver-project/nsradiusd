@@ -392,7 +392,7 @@ static int RadiusProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int n
              ds = Ns_DriverSockContent(sock);
              Tcl_DStringSetLength(ds, sock->driver->bufsize);
              req = RadiusRequestCreate(server, sock->sock, ds->string, ds->length);
-             if (req != NULL) {
+             if (req == NULL) {
                  /* Adjust buffer to actual read size */
                  ds->length = req->req_length;
                  sock->sa = req->sa;
@@ -400,7 +400,7 @@ static int RadiusProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int n
                  return NS_OK;
              }
          }
-         break;
+         return NS_FATAL;
 
      case DriverRecv:
      case DriverSend:

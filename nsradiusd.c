@@ -1,4 +1,4 @@
-/* 
+/*
  * The contents of this file are subject to the Mozilla Public License
  * Version 1.1(the "License"); you may not use this file except in
  * compliance with the License. You may obtain a copy of the License at
@@ -20,7 +20,7 @@
  * version of this file under either the License or the GPL.
  *
  * Author Vlad Seryakov vlad@crystalballinc.com
- * 
+ *
  */
 
 /*
@@ -256,8 +256,8 @@ typedef struct _radiusRequest {
    struct sockaddr_in sa;
 } RadiusRequest;
 
-static Ns_DriverProc RadiusProc;
-static Ns_SockProc RadiusCallback;
+static Ns_DriverProc RadiusDriverProc;
+static Ns_SockProc RadiusSockProc;
 
 static void RadiusInit(Server *server);
 static int RadiusRequestReply(RadiusRequest *req);
@@ -325,7 +325,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
         if (srvPtr->drivermode) {
             init.version = NS_DRIVER_VERSION_1;
             init.name = "nsradius";
-            init.proc = RadiusProc;
+            init.proc = RadiusDriverProc;
             init.opts = NS_DRIVER_UDP;
             init.arg = srvPtr;
             init.path = NULL;
@@ -340,7 +340,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
                 Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
             } else {
                 srvPtr->sock = sock;
-                Ns_SockCallback(sock, RadiusCallback, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
+                Ns_SockCallback(sock, RadiusSockProc, srvPtr, NS_SOCK_READ|NS_SOCK_EXIT|NS_SOCK_EXCEPTION);
                 Ns_Log(Notice,"nsradiusd: radius: listening on %s:%d by %s", srvPtr->address, srvPtr->port, srvPtr->proc);
             }
         }
@@ -375,7 +375,7 @@ static int RadiusInterpInit(Tcl_Interp *interp, void *arg)
     return NS_OK;
 }
 
-static int RadiusProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
+static int RadiusDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
 {
     Ns_DString *ds;
     RadiusRequest *req;
@@ -453,7 +453,7 @@ static int RadiusRequestProc(void *arg, Ns_Conn *conn)
  *----------------------------------------------------------------------
  */
 
-static int RadiusCallback(SOCKET sock, void *arg, int when)
+static int RadiusSockProc(SOCKET sock, void *arg, int when)
 {
     RadiusRequest *req;
     char buf[RADIUS_BUFFER_LEN];
@@ -541,7 +541,7 @@ static void MD5Update(struct MD5Context *ctx,  unsigned const char *buf,  unsign
 }
 
 /*
- * Final wrapup - pad to 64-byte boundary with the bit pattern 
+ * Final wrapup - pad to 64-byte boundary with the bit pattern
  * 1 0* (64-bit count of bits processed,  MSB-first)
  */
 static void MD5Final(unsigned char digest[16],  struct MD5Context *ctx)
@@ -939,7 +939,7 @@ static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int 
         }
         switch(attr->type) {
          case RADIUS_TYPE_DATE:
-            strftime(buf, sizeof(buf), "%Y-%m-%d %T", ns_localtime((const time_t*)&attr->lval));
+            strftime(buf, sizeof(buf), "%Y-%m-%d %T", ns_localtime((const time_t*)(&attr->lval)));
             Ns_DStringPrintf(ds, "%s%s%s", printname?"{":"", buf, printname?"}":"");
             break;
          case RADIUS_TYPE_INTEGER:
@@ -1815,7 +1815,7 @@ static void RadiusRequestProcess(RadiusRequest *req)
 
     Ns_TlsSet(&radiusTls, req);
 
-    if (Tcl_Eval(interp, req->server->proc) != TCL_OK) {
+    if (Tcl_EvalEx(interp, req->server->proc, -1, 0) != TCL_OK) {
         Ns_TclLogError(interp);
     }
     Ns_TclDeAllocateInterp(interp);

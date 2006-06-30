@@ -263,7 +263,8 @@ static void RadiusInit(Server *server);
 static int RadiusRequestReply(RadiusRequest *req);
 static void RadiusRequestFree(RadiusRequest *req);
 static void RadiusRequestProcess(RadiusRequest *req);
-static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int len);
+static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int len, struct sockaddr_in *sa);
+static int RadiusRequestRead(Server *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
 static int RadiusRequestProc(void *arg, Ns_Conn *conn);;
 static int RadiusInterpInit(Tcl_Interp *interp, void *arg);
 static int RadiusCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
@@ -326,7 +327,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
             init.version = NS_DRIVER_VERSION_1;
             init.name = "nsradius";
             init.proc = RadiusDriverProc;
-            init.opts = NS_DRIVER_UDP;
+            init.opts = NS_DRIVER_UDP|NS_DRIVER_ASYNC|NS_DRIVER_QUEUE_ONREAD;
             init.arg = srvPtr;
             init.path = NULL;
             if (Ns_DriverInit(server, module, &init) != NS_OK) {
@@ -377,32 +378,17 @@ static int RadiusInterpInit(Tcl_Interp *interp, void *arg)
 
 static int RadiusDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs, int nbufs)
 {
-    Ns_DString *ds;
-    RadiusRequest *req;
-    Server *server = sock->driver->arg;
+    Server *server = (Server*)sock->driver->arg;
 
     switch (cmd) {
-     case DriverAccept:
-         /*
-          * Read the packet and store it in the request buffer, registered proc
-          * then will use that data for processing
-          */
-
-         if (Ns_DriverSockRequest(sock, "RADIUS / RADIUS/1.0") == NS_OK) {
-             ds = Ns_DriverSockContent(sock);
-             Tcl_DStringSetLength(ds, sock->driver->bufsize);
-             req = RadiusRequestCreate(server, sock->sock, ds->string, ds->length);
-             if (req == NULL) {
-                 /* Adjust buffer to actual read size */
-                 ds->length = req->req_length;
-                 sock->sa = req->sa;
-                 sock->arg = req;
-                 return NS_OK;
-             }
-         }
-         return NS_FATAL;
+     case DriverQueue:
+         return Ns_DriverSetRequest(sock, "RADIUS / RADIUS/1.0");
+         break;
 
      case DriverRecv:
+         return RadiusRequestRead(server, sock->sock, bufs->iov_base, bufs->iov_len, &sock->sa);
+         break;
+
      case DriverSend:
      case DriverClose:
      case DriverKeep:
@@ -413,25 +399,29 @@ static int RadiusDriverProc(Ns_DriverCmd cmd, Ns_Sock *sock, struct iovec *bufs,
 
 static int RadiusRequestProc(void *arg, Ns_Conn *conn)
 {
-    char buf[282];
+    Ns_DString *ds;
     RadiusAttr *attr;
-    Ns_Sock *sock = Ns_ConnSockPtr(conn);
-    RadiusRequest *req = (RadiusRequest*)sock->arg;
+    Ns_Sock *sockPtr;
+    RadiusRequest *req;
+    Server *server = (Server*)arg;
 
+    sockPtr = Ns_ConnSockPtr(conn);
+    ds = Ns_ConnSockContent(conn);
+    req = RadiusRequestCreate(server, sockPtr->sock, ds->string, ds->length, &sockPtr->sa);
     if (req != NULL) {
-        Ns_ConnSetPeer(conn, &req->sa);
         RadiusRequestProcess(req);
         /* For access log file */
         attr = RadiusAttrFind(req->req, NULL, RADIUS_USER_NAME, 0);
         if (attr) {
+            Ns_DStringSetLength(ds, 0);
+            Ns_DStringPrintf(ds, "GET /%s RADIUS/1.0", attr->sval);
             ns_free(conn->request->line);
-            snprintf(buf, sizeof(buf), "GET /%s RADIUS/1.0", attr->sval);
-            conn->request->line = ns_strdup(buf);
+            conn->request->line = ns_strdup(ds->string);
             Ns_ConnSetContentSent(conn, req->reply_length);
             Ns_ConnSetResponseStatus(conn, req->reply_code);
         }
     } else {
-        Ns_Log(Error, "Radius: FD %d: %s: invalid connection", sock->sock, ns_inet_ntoa(sock->sa.sin_addr));
+        Ns_Log(Error, "Radius: FD %d: %s: invalid connection", sockPtr->sock, ns_inet_ntoa(sockPtr->sa.sin_addr));
     }
     RadiusRequestFree(req);
     return NS_OK;
@@ -455,13 +445,16 @@ static int RadiusRequestProc(void *arg, Ns_Conn *conn)
 
 static int RadiusSockProc(SOCKET sock, void *arg, int when)
 {
+    int len;
     RadiusRequest *req;
+    struct sockaddr_in sa;
     char buf[RADIUS_BUFFER_LEN];
     Server *server = (Server*)arg;
 
     switch(when) {
      case NS_SOCK_READ:
-         req = RadiusRequestCreate(server, sock, buf, sizeof(buf));
+         len = RadiusRequestRead(server, sock, buf, sizeof(buf), &sa);
+         req = RadiusRequestCreate(server, sock, buf, len, &sa);
          if (req) {
              RadiusRequestProcess(req);
              RadiusRequestFree(req);
@@ -1823,37 +1816,46 @@ static void RadiusRequestProcess(RadiusRequest *req)
     RadiusRequestReply(req);
 }
 
-static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int buflen)
+static int RadiusRequestRead(Server *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
 {
     int len;
+    socklen_t salen = sizeof(struct sockaddr_in);
+
+    len = recvfrom(sock, buffer, size - 1, 0, (struct sockaddr*)sa, (socklen_t*)&salen);
+    if (len <= 0) {
+        if (server->errors >= 0 && server->errors++ < 100) {
+            Ns_Log(Error, "RadiusRequestRead: %d: recv error: %s", sock, strerror(errno));
+        }
+        return NS_ERROR;
+    }
+    return len;
+}
+
+static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int len, struct sockaddr_in *sa)
+{
     RadiusAttr *attrs;
     RadiusRequest *req;
     RadiusClient *client;
-    struct sockaddr_in sa;
     RadiusHeader *hdr = (RadiusHeader*)buf;
-    socklen_t salen = sizeof(struct sockaddr_in);
 
-    if ((len = recvfrom(sock, buf, buflen, 0, (struct sockaddr*)&sa, &salen)) <= 0) {
-        if (server->errors >= 0 && server->errors++ < 10) {
-            Ns_Log(Error, "RadiusProc: radius: recvfrom error: %s", strerror(errno));
-        }
+    if (buf == NULL || len <= 0) {
         return NULL;
     }
-    if (!(client = RadiusClientFind(server, sa.sin_addr, 0))) {
+    if (!(client = RadiusClientFind(server, sa->sin_addr, 0))) {
         if (server->errors >= 0 && server->errors++ < 100) {
-            Ns_Log(Error, "RadiusRequestCreate: unknown request from %s", ns_inet_ntoa(sa.sin_addr));
+            Ns_Log(Error, "RadiusRequestCreate: unknown request from %s", ns_inet_ntoa(sa->sin_addr));
         }
         return NULL;
     }
     if (len < ntohs(hdr->length)) {
         if (server->errors >= 0 && server->errors++ < 100) {
-            Ns_Log(Error, "RadiusRequestCreate: bad packet length from %s", ns_inet_ntoa(sa.sin_addr));
+            Ns_Log(Error, "RadiusRequestCreate: bad packet length from %s", ns_inet_ntoa(sa->sin_addr));
         }
         return NULL;
     }
     if (!(attrs = RadiusAttrParse(server, hdr, len, client->secret))) {
         if (server->errors >= 0 && server->errors++ < 100) {
-            Ns_Log(Error, "RadiusRequestCreate: invalid request from %s", ns_inet_ntoa(sa.sin_addr));
+            Ns_Log(Error, "RadiusRequestCreate: invalid request from %s", ns_inet_ntoa(sa->sin_addr));
         }
         return NULL;
     }
@@ -1868,8 +1870,8 @@ static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf
     req->req_length = len;
     req->reply_code = RADIUS_ACCESS_REJECT;
     req->buffer = buf;
-    req->buffer_length = buflen;
-    memcpy(&req->sa, &sa, sizeof(sa));
+    req->buffer_length = len;
+    req->sa = *sa;
     memcpy(req->vector, hdr->vector, RADIUS_VECTOR_LEN);
     return req;
 }

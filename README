@@ -8,44 +8,44 @@ This is NaviServer module that implements RADIUS server
 
 
  Configuration
- 
+
    nsd.tcl
- 
+
    ns_section    ns/servers/server/modules
    ns_param      nsradiusd        nsradiusd.so
- 
+
    ns_section    ns/servers/server/module/nradiusd
    ns_param      address    	0.0.0.0
    ns_param      port           1645
    ns_param	 proc		radius::server
    ns_param	 drivermode     false
 
-   If drivemode is true, tftp server will use connection threads and will
-   comply to all naviserver driver rules. Otherwise it will create thread 
+   If drivemode is true, radius server will use connection threads and will
+   comply to all naviserver driver rules. Otherwise it will create thread
    for each request without any restrictions.
-   
+
  Usage
 
     ns_radius useradd username checkattrs replyattrs
      Adds new user into user list
-       
+
       Example:
          ns_radius useradd test {Auth-Profile System-Profile} {Framed-IP-Address 127.0.0.1}
 
     ns_radius userfind username
       Returns user record as a list, { checkattrs replyattrs }
-      
+
       Example:
         set user [ns_radius userfind test]
         {auth-profile {System-Profile}} {framed-ip-address 127.0.0.0}
-    
+
     ns_radius send host port secret ?Code code? ?Retries retries? ?Timeout timeout? ?attr value? ...
       performs RADIUS requests
-  
+
       Example:
         ns_radius send localhost 1645 secret User-Name test User-Password test2
- 
+
  Authors
- 
+
      Vlad Seryakov vlad@crystalballinc.com
 

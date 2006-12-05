@@ -4,8 +4,10 @@
 namespace eval radius {
 }
 
-ns_schedule_proc -once 0 radius::init
-ns_schedule_proc 60 radius::refresh
+if { [info command ns_radius] != "" } {
+  ns_schedule_proc -once 0 radius::init
+  ns_schedule_proc 60 radius::refresh
+}
 
 # Global RADIUS initialization
 proc radius::init {} {

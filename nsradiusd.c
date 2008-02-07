@@ -461,7 +461,7 @@ static int RadiusSockProc(SOCKET sock, void *arg, int when)
          }
          return NS_TRUE;
     }
-    close(sock);
+    ns_sockclose(sock);
     return NS_FALSE;
 }
 
@@ -1442,7 +1442,7 @@ static int RadiusCmd(ClientData arg,  Tcl_Interp *interp, int objc, Tcl_Obj *CON
 again:
         if (sendto(fd, (char *)hdr, ntohs(hdr->length), 0, (struct sockaddr *)&sa, sizeof(struct sockaddr_in)) <= 0) {
             Tcl_AppendResult(interp, "noResponse: ", strerror(errno), 0);
-            close(fd);
+            ns_sockclose(fd);
             return TCL_ERROR;
         }
         tm.tv_usec = 0L;
@@ -1452,21 +1452,21 @@ again:
         if (select(fd + 1, &rfds, 0, 0, &tm) < 0) {
             if (errno == EINTR) goto again;
             Tcl_AppendResult(interp, "noResponse: ", strerror(errno), 0);
-            close(fd);
+            ns_sockclose(fd);
             return TCL_ERROR;
         }
         if (!FD_ISSET(fd, &rfds)) {
             if (--retries > 0) goto again;
             Tcl_AppendResult(interp, "noResponse: timeout", 0);
-            close(fd);
+            ns_sockclose(fd);
             return TCL_ERROR;
         }
         if ((len = recvfrom(fd, (char *)buffer, sizeof(buffer), 0, (struct sockaddr*)&sa, (socklen_t*)&salen)) <= 0) {
             Tcl_AppendResult(interp, "noResponse: ", strerror(errno), 0);
-            close(fd);
+            ns_sockclose(fd);
             return TCL_ERROR;
         }
-        close(fd);
+        ns_sockclose(fd);
         // Verify that id (seq. number) matches what we sent
         if (hdr->id != (u_char)id || len < ntohs(hdr->length)) {
             Tcl_AppendResult(interp, "noResponse: ID/length does not match", 0);
@@ -1880,7 +1880,7 @@ static void RadiusRequestFree(RadiusRequest *req)
 {
     if (req) {
         if (req->sock > 0) {
-            close(req->sock);
+            ns_sockclose(req->sock);
         }
         RadiusAttrFree(&req->req);
         RadiusAttrFree(&req->reply);

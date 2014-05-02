@@ -299,7 +299,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
     char *path;
     SOCKET sock;
     Server *srvPtr;
-    Ns_DriverInitData init;
+    Ns_DriverInitData init = {0};
     static int initialized = 0;
 
     if (!initialized) {

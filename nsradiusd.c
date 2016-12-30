@@ -263,8 +263,8 @@ static void RadiusInit(Server *server);
 static int RadiusRequestReply(RadiusRequest *req);
 static void RadiusRequestFree(RadiusRequest *req);
 static void RadiusRequestProcess(RadiusRequest *req);
-static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int len, struct sockaddr_in *sa);
-static int RadiusRequestRead(Server *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
+static RadiusRequest *RadiusRequestCreate(Server *server, NS_SOCKET sock, char *buf, int len, struct sockaddr_in *sa);
+static int RadiusRequestRead(Server *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa);
 static int RadiusRequestProc(void *arg, Ns_Conn *conn);;
 static int RadiusInterpInit(Tcl_Interp *interp, void *arg);
 static int RadiusCmd(ClientData arg, Tcl_Interp *interp, int objc, Tcl_Obj *CONST objv[]);
@@ -294,10 +294,10 @@ NS_EXPORT int Ns_ModuleVersion = 1;
  *----------------------------------------------------------------------
  */
 
-NS_EXPORT int Ns_ModuleInit(char *server, char *module)
+NS_EXPORT int Ns_ModuleInit(const char *server, const char *module)
 {
     char *path;
-    SOCKET sock;
+    NS_SOCKET sock;
     Server *srvPtr;
     Ns_DriverInitData init = {0};
     static int initialized = 0;
@@ -337,7 +337,7 @@ NS_EXPORT int Ns_ModuleInit(char *server, char *module)
             }
             Ns_RegisterRequest(server, "RADIUS",  "/", RadiusRequestProc, NULL, srvPtr, 0);
         } else {
-            if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port)) == -1) {
+	    if ((sock = Ns_SockListenUdp(srvPtr->address, srvPtr->port, NS_FALSE)) == -1) {
                 Ns_Log(Error,"nsradiusd: couldn't create socket: %s:%d: %s", srvPtr->address, srvPtr->port, strerror(errno));
             } else {
                 srvPtr->sock = sock;
@@ -443,7 +443,7 @@ static int RadiusRequestProc(void *arg, Ns_Conn *conn)
  *----------------------------------------------------------------------
  */
 
-static int RadiusSockProc(SOCKET sock, void *arg, int when)
+static bool RadiusSockProc(NS_SOCKET sock, void *arg, int when)
 {
     int len;
     RadiusRequest *req;
@@ -1816,7 +1816,7 @@ static void RadiusRequestProcess(RadiusRequest *req)
     RadiusRequestReply(req);
 }
 
-static int RadiusRequestRead(Server *server, SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
+static int RadiusRequestRead(Server *server, NS_SOCKET sock, char *buffer, int size, struct sockaddr_in *sa)
 {
     int len;
     socklen_t salen = sizeof(struct sockaddr_in);
@@ -1831,7 +1831,7 @@ static int RadiusRequestRead(Server *server, SOCKET sock, char *buffer, int size
     return len;
 }
 
-static RadiusRequest *RadiusRequestCreate(Server *server, SOCKET sock, char *buf, int len, struct sockaddr_in *sa)
+static RadiusRequest *RadiusRequestCreate(Server *server, NS_SOCKET sock, char *buf, int len, struct sockaddr_in *sa)
 {
     RadiusAttr *attrs;
     RadiusRequest *req;

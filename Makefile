@@ -10,7 +10,7 @@ MOD      =  nsradiusd.so
 #
 # Objects to build.
 #
-OBJS     = nsradiusd.o
+MODOBJS     = nsradiusd.o
 
 PROCS   = radiusd_procs.tcl
 

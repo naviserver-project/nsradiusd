@@ -957,7 +957,7 @@ static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int 
                 Ns_DStringPrintf(ds, "%2.2X", attr->sval[i]);
             }
         }
-        if (!prinstall) {
+        if (!printAll) {
             break;
         }
       }

@@ -53,7 +53,7 @@ proc radius::loadfile { proc file } {
     }
 }
 
-# Load local users from /etc/shadow if accessable
+# Load local users from /etc/shadow if accessible
 proc radius::loadusers { file } {
 
     if { [catch { set fd [open $file] }] } { return }
@@ -70,7 +70,7 @@ proc radius::loadusers { file } {
     ns_log Notice radius::loadusers: loaded $count users
 }
 
-# Load hosts from /etc/hosts if accessable
+# Load hosts from /etc/hosts if accessible
 proc radius::loadhosts { file } {
 
     if { [catch { set fd [open $file] }] } { return }

@@ -415,8 +415,8 @@ static int RadiusRequestProc(void *arg, Ns_Conn *conn)
         if (attr) {
             Ns_DStringSetLength(ds, 0);
             Ns_DStringPrintf(ds, "GET /%s RADIUS/1.0", attr->sval);
-            ns_free(conn->request->line);
-            conn->request->line = ns_strdup(ds->string);
+            ns_free(conn->request.line);
+            conn->request.line = ns_strdup(ds->string);
             Ns_ConnSetContentSent(conn, req->reply_length);
             Ns_ConnSetResponseStatus(conn, req->reply_code);
         }
@@ -913,7 +913,7 @@ static RadiusAttr *RadiusAttrCreate(Server *server, char *name, int attr, int ve
     return vp;
 }
 
-static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int printall, int vendor)
+static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int printAll, int vendor)
 {
     unsigned i;
     char buf[64];
@@ -957,7 +957,7 @@ static void RadiusAttrPrintf(RadiusAttr *vp, Ns_DString *ds, int printname, int 
                 Ns_DStringPrintf(ds, "%2.2X", attr->sval[i]);
             }
         }
-        if (!printall) {
+        if (!prinstall) {
             break;
         }
       }
